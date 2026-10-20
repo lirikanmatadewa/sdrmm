@@ -44,6 +44,46 @@ class FdkToolchainTests(unittest.TestCase):
         self.assertIn("--fresh", configure_args)
 
 
+class MsvcEnvironmentTests(unittest.TestCase):
+    def test_existing_developer_environment_is_preserved(self):
+        env = {"PATH": "tools", "VSCMD_VER": "17.0"}
+        with patch("subprocess.run") as run:
+            self.assertEqual(MEDIA["msvc_env"](env), env)
+        run.assert_not_called()
+
+    def test_developer_environment_is_loaded(self):
+        env = {"PATH": "pixi", "ProgramFiles(x86)": "C:/Program Files (x86)"}
+        with (
+            patch("pathlib.Path.is_file", return_value=True),
+            patch(
+                "subprocess.run",
+                side_effect=[
+                    Mock(stdout="C:/VS\n"),
+                    Mock(stdout="Path=msvc;pixi\nINCLUDE=C:/SDK\nVALUE=a=b\n"),
+                ],
+            ) as run,
+        ):
+            result = MEDIA["msvc_env"](env)
+        self.assertEqual(result["PATH"], "msvc;pixi")
+        self.assertEqual(result["INCLUDE"], "C:/SDK")
+        self.assertEqual(result["VALUE"], "a=b")
+        self.assertIn("VsDevCmd.bat", run.call_args.args[0][-1])
+        self.assertIn("-arch=x64", run.call_args.args[0][-1])
+        self.assertEqual(env["PATH"], "pixi")
+
+    def test_missing_cpp_tools_have_actionable_error(self):
+        for installed in (False, True):
+            with (
+                self.subTest(installed=installed),
+                patch("pathlib.Path.is_file", return_value=installed),
+                patch("subprocess.run", return_value=Mock(stdout="")),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "Desktop development with C\\+\\+"
+                ):
+                    MEDIA["msvc_env"]({})
+
+
 class MediaShellTests(unittest.TestCase):
     def test_make_uses_relative_source_paths(self):
         make_command = MEDIA["make_command"]

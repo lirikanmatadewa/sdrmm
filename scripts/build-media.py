@@ -51,6 +51,58 @@ def work_dir(target):
     return ROOT / ".media-build" / target
 
 
+def msvc_env(env):
+    if env.get("VSCMD_VER"):
+        return env
+    installer = Path(env.get("ProgramFiles(x86)", "C:/Program Files (x86)"))
+    vswhere = installer / "Microsoft Visual Studio/Installer/vswhere.exe"
+    missing_tools = (
+        "Install Visual Studio Build Tools with Desktop development with C++ "
+        "and a Windows SDK, then retry."
+    )
+    if not vswhere.is_file():
+        raise RuntimeError(missing_tools)
+    installation = subprocess.run(
+        [
+            str(vswhere),
+            "-latest",
+            "-products",
+            "*",
+            "-requires",
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "-property",
+            "installationPath",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    if not installation:
+        raise RuntimeError(missing_tools)
+    devcmd = Path(installation) / "Common7/Tools/VsDevCmd.bat"
+    arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
+    output = subprocess.run(
+        [
+            env.get("COMSPEC", "C:/Windows/System32/cmd.exe"),
+            "/d",
+            "/s",
+            "/c",
+            f'call "{devcmd}" -no_logo -arch={arch} -host_arch={arch} >nul && set',
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    result = env.copy()
+    for line in output.splitlines():
+        name, separator, value = line.partition("=")
+        if name and separator:
+            result[name.upper()] = value
+    return result
+
+
 def shell_env():
     env = os.environ.copy()
     extra = env.get("MEDIA_SHELL_BIN")
@@ -316,6 +368,7 @@ def main():
     work.mkdir(parents=True, exist_ok=True)
     env = shell_env()
     if "windows-msvc" in args.target:
+        env = msvc_env(env)
         require_msys_shell(env)
     fdk = work / "fdk-aac"
     build_fdk(prepare_fdk(work), fdk, args.target, env)

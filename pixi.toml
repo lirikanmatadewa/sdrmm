@@ -5,6 +5,9 @@ name = "sdrmm"
 platforms = ["win-64"]
 version = "0.1.0"
 
+[target.win-64.activation]
+scripts = ["scripts/activate-msvc.bat"]
+
 [target.win-64.activation.env]
 PATH = '%PIXI_PROJECT_ROOT%\.media\x86_64-pc-windows-msvc\bin;%PATH%'
 
