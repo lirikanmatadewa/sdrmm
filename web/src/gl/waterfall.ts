@@ -1,9 +1,9 @@
 import { token } from "../lib/tokens";
 import { COLORMAP_GLSL, CUSTOM_STOPS, type Palette, paletteIndex, type Rgb } from "./colormap";
 import {
+  advanceRing,
   backingPx,
   fitExtent,
-  nextRingRow,
   pixelRatio,
   rowsForHeight,
   seedPlacement,
@@ -244,11 +244,11 @@ class Plot implements WaterfallView {
     if (live === null || bins.length === 0) {
       return;
     }
-    const gl = live.context.gl;
     if (bins.length !== this.bins) {
       this.allocate(bins.length);
     }
     this.storeRow(this.writeRow, level);
+    const gl = live.context.gl;
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, live.texture);
     gl.texSubImage2D(
@@ -262,7 +262,7 @@ class Plot implements WaterfallView {
       gl.UNSIGNED_BYTE,
       bins,
     );
-    this.writeRow = nextRingRow(this.writeRow, HISTORY_ROWS);
+    this.writeRow = advanceRing(this.writeRow, HISTORY_ROWS);
     this.dirty = true;
   }
 

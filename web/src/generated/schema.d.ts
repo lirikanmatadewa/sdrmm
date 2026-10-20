@@ -3019,6 +3019,8 @@ export interface components {
             bandwidth_ranges?: components["schemas"]["Range"][];
             bandwidths: number[];
             bias_tee?: boolean;
+            /** Format: double */
+            clean_fraction?: number | null;
             coherence?: components["schemas"]["Coherence"];
             dc_artifact?: components["schemas"]["DcArtifact"];
             directional?: components["schemas"]["DirectionalCapabilities"] | null;
@@ -3235,6 +3237,7 @@ export interface components {
             channel: number;
             /** Format: float */
             level_db: number;
+            open?: boolean;
             /** Format: float */
             peak_db: number;
             /** Format: double */
@@ -9568,6 +9571,11 @@ export interface components {
             bins?: number;
             /** Format: int32 */
             fps?: number;
+            /**
+             * @description Also send the spectrum this port can derive from its own signal, for ports that carry
+             *     something else as well.
+             */
+            spectrum?: boolean;
         };
         StreamScope: {
             agc?: boolean;

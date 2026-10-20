@@ -17,16 +17,18 @@ function canvas() {
 function harness() {
   const draw = vi.fn();
   const uniform3fv = vi.fn();
+  const texSubImage2D = vi.fn();
   const callbacks = new Map<number, FrameRequestCallback>();
   const observers: IntersectionObserverCallback[] = [];
   const listeners = new Map<string, EventListener>();
   let next = 0;
   const gl = new Proxy(
-    { drawArrays: draw, uniform3fv },
+    { drawArrays: draw, uniform3fv, texSubImage2D },
     {
       get(target, name) {
         if (name === "drawArrays") return target.drawArrays;
         if (name === "uniform3fv") return target.uniform3fv;
+        if (name === "texSubImage2D") return target.texSubImage2D;
         if (name === "getExtension") return () => null;
         if (String(name).toUpperCase() === name) return 1;
         return () => ({});
@@ -59,6 +61,7 @@ function harness() {
   return {
     draw,
     uniform3fv,
+    texSubImage2D,
     canvas,
     frame() {
       const pending = [...callbacks.values()];

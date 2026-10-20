@@ -1,16 +1,25 @@
 import { useEffect, useRef, useState } from "react";
+import { rowLevel } from "../../components/spectrumAlign";
 import { type Colormap, DEFAULT_COLORMAP } from "../../gl/colormap";
 import { attachWaterfall, GRAPHICS_HELP, type WaterfallView } from "../../gl/waterfall";
-import { watchAudio } from "../../lib/audio/monitor";
-import { AudioSpectrogram, audioNyquistHz } from "../../lib/dsp/audioSpectrum";
+import {
+  AUDIO_SPECTRUM_BINS,
+  AUDIO_SPECTRUM_FPS,
+  audioNyquistHz,
+  spectrumHub,
+} from "../../lib/spectrum";
 
 const TICKS_HZ = [3000, 6000, 12_000, 18_000];
 
 export function AudioSpectrogramView({
+  node,
+  port,
   source,
   playing,
   colormap = DEFAULT_COLORMAP,
 }: {
+  node: string;
+  port: string;
   source: string;
   playing: boolean;
   colormap?: Colormap;
@@ -44,14 +53,18 @@ export function AudioSpectrogramView({
     if (!playing) {
       return;
     }
-    const spectrogram = new AudioSpectrogram();
-    const stop = watchAudio(source, (pcm, channels) => {
-      spectrogram.push(pcm, channels, (row) => {
-        rendererRef.current?.pushRow(row);
-      });
-    });
-    return stop;
-  }, [source, playing]);
+    return spectrumHub.subscribe(
+      node,
+      port,
+      (frame) => {
+        rendererRef.current?.pushRow(
+          frame.bins,
+          rowLevel({ min: frame.dbMin, max: frame.dbMax }, frame.floorDb, Date.now()),
+        );
+      },
+      { bins: AUDIO_SPECTRUM_BINS, fps: AUDIO_SPECTRUM_FPS, source },
+    );
+  }, [node, port, source, playing]);
 
   return (
     <div className="relative h-24 w-full overflow-hidden rounded-control bg-plot-bg">
