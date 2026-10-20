@@ -2,18 +2,19 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import shutil
 import subprocess
 import tarfile
 import urllib.request
-
+from pathlib import Path
 
 VERSION = "9.0.2"
 SHA256 = "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e"
 FDK_VERSION = "2.0.3"
 FDK_SHA256 = "e25671cd96b10bad896aa42ab91a695a9e573395262baed4e4a2ff178d6a3a78"
+MSYS_MAKE_VERSION = "4.4.1-3"
+MSYS_MAKE_SHA256 = "af0bdba17f06fe037f0194069adaa31a8fe45f1a11381501896aea1fae37bd5d"
 ROOT = Path(__file__).resolve().parents[1]
 LIBRARY_PATH = {"Darwin": "DYLD_LIBRARY_PATH", "Linux": "LD_LIBRARY_PATH"}
 
@@ -21,7 +22,11 @@ LIBRARY_PATH = {"Darwin": "DYLD_LIBRARY_PATH", "Linux": "LD_LIBRARY_PATH"}
 def target_name():
     machine = platform.machine().lower()
     arch = "aarch64" if machine in ("arm64", "aarch64") else "x86_64"
-    suffix = {"Darwin": "apple-darwin", "Linux": "unknown-linux-gnu", "Windows": "pc-windows-msvc"}[platform.system()]
+    suffix = {
+        "Darwin": "apple-darwin",
+        "Linux": "unknown-linux-gnu",
+        "Windows": "pc-windows-msvc",
+    }[platform.system()]
     return f"{arch}-{suffix}"
 
 
@@ -49,6 +54,10 @@ def work_dir(target):
 def shell_env():
     env = os.environ.copy()
     extra = env.get("MEDIA_SHELL_BIN")
+    if not extra and platform.system() == "Windows":
+        shell = shutil.which("sh", path=env.get("PATH"))
+        if shell:
+            extra = str(Path(shell).parent)
     if extra:
         env["PATH"] = os.pathsep.join([extra, env.get("PATH", "")])
     return env
@@ -69,15 +78,21 @@ def run(args, cwd, env):
 
 def require_msys_shell(env):
     kernel = subprocess.run(
-        [tool("bash", env), "-c", "uname -s"], env=env, capture_output=True, text=True, check=True
+        [tool("bash", env), "-c", "uname -s"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
-    if kernel.startswith("CYGWIN"):
-        raise RuntimeError("Cygwin bash cannot build FFmpeg for clang-cl, put MSYS2 usr\\bin in MEDIA_SHELL_BIN")
+    if not kernel.startswith(("MINGW", "MSYS")):
+        raise RuntimeError(
+            "FFmpeg requires MSYS2 or Git Bash; set MEDIA_SHELL_BIN to its usr/bin directory"
+        )
 
 
 def unpack(work, archive, url, sha256, name):
     if not archive.exists():
-        with urllib.request.urlopen(url) as response:
+        with urllib.request.urlopen(url, timeout=60) as response:
             archive.write_bytes(response.read())
     if hashlib.sha256(archive.read_bytes()).hexdigest() != sha256:
         raise RuntimeError(f"{name} source checksum mismatch")
@@ -90,32 +105,45 @@ def unpack(work, archive, url, sha256, name):
 
 def prepare_source(work, archive):
     return unpack(
-        work, archive or work / f"ffmpeg-{VERSION}.tar.xz",
-        f"https://ffmpeg.org/releases/ffmpeg-{VERSION}.tar.xz", SHA256, f"ffmpeg-{VERSION}",
+        work,
+        archive or work / f"ffmpeg-{VERSION}.tar.xz",
+        f"https://ffmpeg.org/releases/ffmpeg-{VERSION}.tar.xz",
+        SHA256,
+        f"ffmpeg-{VERSION}",
     )
 
 
 def prepare_fdk(work):
     return unpack(
-        work, work / f"fdk-aac-{FDK_VERSION}.tar.gz",
-        f"https://github.com/mstorsjo/fdk-aac/archive/refs/tags/v{FDK_VERSION}.tar.gz", FDK_SHA256,
+        work,
+        work / f"fdk-aac-{FDK_VERSION}.tar.gz",
+        f"https://github.com/mstorsjo/fdk-aac/archive/refs/tags/v{FDK_VERSION}.tar.gz",
+        FDK_SHA256,
         f"fdk-aac-{FDK_VERSION}",
     )
 
 
-def fdk_toolchain(target):
+def fdk_toolchain(target, env):
     arch = target.split("-", 1)[0]
     if "windows-msvc" in target:
         return [
-            "-G", "NMake Makefiles", "-DCMAKE_C_COMPILER=clang-cl", "-DCMAKE_CXX_COMPILER=clang-cl",
+            "--fresh",
+            "-G",
+            "NMake Makefiles",
+            "-DCMAKE_C_COMPILER=clang-cl",
+            "-DCMAKE_CXX_COMPILER=clang-cl",
+            f"-DCMAKE_LINKER={Path(tool('lld-link', env)).as_posix()}",
+            f"-DCMAKE_AR={Path(tool('lib', env)).as_posix()}",
             "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
         ]
     if "apple-darwin" in target:
         return [f"-DCMAKE_OSX_ARCHITECTURES={'arm64' if arch == 'aarch64' else arch}"]
     if target != target_name():
         return [
-            "-DCMAKE_SYSTEM_NAME=Linux", f"-DCMAKE_SYSTEM_PROCESSOR={arch}",
-            f"-DCMAKE_C_COMPILER={arch}-linux-gnu-gcc", f"-DCMAKE_CXX_COMPILER={arch}-linux-gnu-g++",
+            "-DCMAKE_SYSTEM_NAME=Linux",
+            f"-DCMAKE_SYSTEM_PROCESSOR={arch}",
+            f"-DCMAKE_C_COMPILER={arch}-linux-gnu-gcc",
+            f"-DCMAKE_CXX_COMPILER={arch}-linux-gnu-g++",
         ]
     return []
 
@@ -123,14 +151,29 @@ def fdk_toolchain(target):
 def build_fdk(source, prefix, target, env):
     build = source.parent / "fdk-build"
     cmake = tool("cmake", env)
-    run([
-        cmake, "-S", str(source), "-B", str(build), "-DCMAKE_BUILD_TYPE=Release",
-        "-DBUILD_SHARED_LIBS=OFF", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
-        "-DFDK_AAC_INSTALL_CMAKE_CONFIG_MODULE=OFF", "-DCMAKE_INSTALL_LIBDIR=lib",
-        f"-DCMAKE_INSTALL_PREFIX={prefix.as_posix()}",
-        *fdk_toolchain(target),
-    ], source.parent, env)
-    run([cmake, "--build", str(build), "--parallel", str(os.cpu_count() or 2)], source.parent, env)
+    run(
+        [
+            cmake,
+            "-S",
+            str(source),
+            "-B",
+            str(build),
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DBUILD_SHARED_LIBS=OFF",
+            "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+            "-DFDK_AAC_INSTALL_CMAKE_CONFIG_MODULE=OFF",
+            "-DCMAKE_INSTALL_LIBDIR=lib",
+            f"-DCMAKE_INSTALL_PREFIX={prefix.as_posix()}",
+            *fdk_toolchain(target, env),
+        ],
+        source.parent,
+        env,
+    )
+    run(
+        [cmake, "--build", str(build), "--parallel", str(os.cpu_count() or 2)],
+        source.parent,
+        env,
+    )
     run([cmake, "--install", str(build)], source.parent, env)
 
 
@@ -140,14 +183,28 @@ def library_path_flag(target):
 
 def configure(source, prefix, fdk, target, env):
     args = [
-        tool("bash", env), str(source / "configure"), f"--prefix={prefix.as_posix()}",
-        "--disable-autodetect", "--disable-everything", "--disable-network",
-        "--disable-programs", "--disable-doc", "--disable-debug", "--enable-shared",
-        "--disable-static", "--enable-pic", "--disable-avdevice", "--disable-avfilter",
-        "--enable-avcodec", "--enable-avformat", "--enable-swresample", "--enable-swscale",
+        tool("bash", env),
+        (source / "configure").as_posix(),
+        f"--prefix={prefix.as_posix()}",
+        "--disable-autodetect",
+        "--disable-everything",
+        "--disable-network",
+        "--disable-programs",
+        "--disable-doc",
+        "--disable-debug",
+        "--enable-shared",
+        "--disable-static",
+        "--enable-pic",
+        "--disable-avdevice",
+        "--disable-avfilter",
+        "--enable-avcodec",
+        "--enable-avformat",
+        "--enable-swresample",
+        "--enable-swscale",
         "--enable-decoder=aac,aac_latm,ac3,eac3,mp2,mpeg2video,h264,hevc,libfdk_aac",
         "--enable-parser=aac,aac_latm,ac3,mpegaudio,mpegvideo,h264,hevc",
-        "--enable-libfdk-aac", f"--extra-cflags=-I{(fdk / 'include').as_posix()}",
+        "--enable-libfdk-aac",
+        f"--extra-cflags=-I{(fdk / 'include').as_posix()}",
         f"--extra-ldflags={library_path_flag(target)}{(fdk / 'lib').as_posix()}",
     ]
     arch = target.split("-", 1)[0]
@@ -158,20 +215,32 @@ def configure(source, prefix, fdk, target, env):
         # `lib.exe` rather than `llvm-lib`: configure picks an archiver's flags by asking it who it
         # is, and only the Microsoft banner selects `-out:`. llvm-lib answers with nothing configure
         # recognises, so it falls back to `ar rc` syntax and llvm-lib reads `rc` as a missing input.
-        args.extend(["--toolchain=msvc", "--target-os=win32", "--cc=clang-cl", "--ld=lld-link"])
+        args.extend(
+            ["--toolchain=msvc", "--target-os=win32", "--cc=clang-cl", "--ld=lld-link"]
+        )
         # FFmpeg assembles its aarch64 kernels with armasm64 behind gas-preprocessor.pl, and the
         # Windows ARM64 runner carries neither.
         if arch == "aarch64":
             args.append("--disable-asm")
     elif "apple-darwin" in target:
-        args.extend([
-            "--target-os=darwin", "--install-name-dir=@rpath", "--extra-ldsoflags=-Wl,-rpath,@loader_path",
-            f"--cc=clang -arch {'arm64' if arch == 'aarch64' else arch}",
-        ])
+        args.extend(
+            [
+                "--target-os=darwin",
+                "--install-name-dir=@rpath",
+                "--extra-ldsoflags=-Wl,-rpath,@loader_path",
+                f"--cc=clang -arch {'arm64' if arch == 'aarch64' else arch}",
+            ]
+        )
         if target != target_name():
             args.append("--enable-cross-compile")
     elif target != target_name():
-        args.extend(["--enable-cross-compile", "--target-os=linux", f"--cross-prefix={arch}-linux-gnu-"])
+        args.extend(
+            [
+                "--enable-cross-compile",
+                "--target-os=linux",
+                f"--cross-prefix={arch}-linux-gnu-",
+            ]
+        )
     return args
 
 
@@ -181,7 +250,9 @@ def run_configure(args, work, env):
     except subprocess.CalledProcessError:
         log = work / "ffbuild" / "config.log"
         if log.exists():
-            print("".join(log.read_text(errors="replace").splitlines(keepends=True)[-80:]))
+            print(
+                "".join(log.read_text(errors="replace").splitlines(keepends=True)[-80:])
+            )
         raise
 
 
@@ -190,6 +261,36 @@ def move_import_libraries(prefix):
     lib.mkdir(parents=True, exist_ok=True)
     for library in (prefix / "bin").glob("*.lib"):
         library.replace(lib / library.name)
+
+
+def prepare_msys_make(work):
+    tools = work / f"msys-make-{MSYS_MAKE_VERSION}"
+    tools.mkdir(parents=True, exist_ok=True)
+    archive = f"make-{MSYS_MAKE_VERSION}-x86_64.pkg.tar.zst"
+    prefix = unpack(
+        tools,
+        work / archive,
+        f"https://mirror.msys2.org/msys/x86_64/{archive}",
+        MSYS_MAKE_SHA256,
+        "usr",
+    )
+    return str(prefix / "bin" / "make.exe")
+
+
+def make_command(source, env):
+    make = (
+        prepare_msys_make(source.parent)
+        if platform.system() == "Windows"
+        else tool("make", env)
+    )
+    return [
+        make,
+        "SHELL=sh",
+        "-f",
+        (source / "Makefile").as_posix(),
+        f"SRC_PATH={source.name}",
+        f"SRC_LINK={source.name}",
+    ]
 
 
 def main():
@@ -218,12 +319,15 @@ def main():
         require_msys_shell(env)
     fdk = work / "fdk-aac"
     build_fdk(prepare_fdk(work), fdk, args.target, env)
-    env["PKG_CONFIG_PATH"] = os.pathsep.join([str(fdk / "lib" / "pkgconfig"), env.get("PKG_CONFIG_PATH", "")])
+    env["PKG_CONFIG_PATH"] = os.pathsep.join(
+        [str(fdk / "lib" / "pkgconfig"), env.get("PKG_CONFIG_PATH", "")]
+    )
     source = prepare_source(work, args.archive)
     run_configure(configure(source, prefix, fdk, args.target, env), work, env)
-    run([tool("make", env), "-j", str(os.cpu_count() or 2)], work, env)
+    make = make_command(source, env)
+    run([*make, "-j", str(os.cpu_count() or 2)], work, env)
     shutil.rmtree(prefix, ignore_errors=True)
-    run([tool("make", env), "install"], work, env)
+    run([*make, "install"], work, env)
     if "windows-msvc" in args.target:
         move_import_libraries(prefix)
     marker.write_text(fingerprint)

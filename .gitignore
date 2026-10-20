@@ -56,3 +56,6 @@ web/playwright-report/
 .dev.vars
 site/worker/worker-configuration.d.ts
 site/downloads/worker-configuration.d.ts
+# pixi environments
+.pixi/*
+!.pixi/config.toml

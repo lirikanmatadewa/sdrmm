@@ -1,0 +1,33 @@
+[workspace]
+authors = ["Lirikan Mata Dewa <lirikanmatadewa@gmail.com>"]
+channels = ["conda-forge"]
+name = "sdrmm"
+platforms = ["win-64"]
+version = "0.1.0"
+
+[target.win-64.activation.env]
+PATH = '%PIXI_PROJECT_ROOT%\.media\x86_64-pc-windows-msvc\bin;%PATH%'
+
+[tasks]
+build-media = "python scripts/build-media.py"
+pnpm-web-install = "pnpm --dir web install --frozen-lockfile"
+pnpm-web-build = "pnpm --dir web build"
+install-sdrmm = { cmd = "cargo --config .media/cargo.toml run -p sdrmm", depends-on = ["build-media", "pnpm-web-install", "pnpm-web-build"] }
+run-sdrmm = "cargo --config .media/cargo.toml run -p sdrmm"
+test-media = "python -m unittest discover -s scripts -p test_build_media.py"
+format-media = "ruff format --check scripts/build-media.py scripts/test_build_media.py"
+lint-media = "ruff check scripts/build-media.py scripts/test_build_media.py"
+typecheck-media = "ty check scripts/build-media.py scripts/test_build_media.py"
+check-media = { depends-on = ["format-media", "lint-media", "typecheck-media", "test-media"] }
+
+[dependencies]
+cmake = ">=4.4,<5"
+python = "3.14.*"
+pnpm = ">=12.4.1,<13"
+rust = ">=1.99.0,<1.100"
+clang = ">=22.1.8,<23"
+llvm = ">=22.1.8,<23"
+ninja = ">=1.13.2,<2"
+lld = ">=22.1.8,<23"
+ruff = "*"
+ty = "*"
